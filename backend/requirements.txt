@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+pydantic
+python-dotenv
+scikit-learn
+pandas
+pytest
+httpx

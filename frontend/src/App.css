@@ -1,0 +1,65 @@
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+  background-color: #f7f9fa;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 30px;
+  background: #34495e;
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: 0.5px;
+}
+
+.status-indicators {
+  display: flex;
+  gap: 15px;
+}
+
+.indicator {
+  font-size: 0.75rem;
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.indicator.demo {
+  color: #f39c12;
+  border: 1px solid #f39c12;
+}
+
+.indicator.ok {
+  color: #2ecc71;
+  border: 1px solid #2ecc71;
+}
+
+.app-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.map-view {
+  flex: 2;
+  padding: 20px;
+}
+
+.panel-view {
+  flex: 1;
+  min-width: 400px;
+  max-width: 500px;
+}
