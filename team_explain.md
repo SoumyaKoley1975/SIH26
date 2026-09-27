@@ -44,10 +44,12 @@ Hazard Detection → Risk Assessment → Safety Filter → Site Sustainability �
 └──────────────────────────┴──────────────────────────────────────┘
                            │
                     REST API Layer
-              GET /api/landslide/hazard/{lat}/{lon}
-              GET /api/landslide/susceptibility/{lat}/{lon}
-              GET /api/landslide/trigger/{lat}/{lon}
-              GET /api/landslide/data-status
+        ┌───────────────────────────────────────────────┐
+        │  GET /api/landslide/hazard/{lat}/{lon}        │ ← Landslide Engine
+        │  GET /api/cloudburst/hazard/{lat}/{lon}       │ ← Cloudburst Engine
+        │  GET /api/flood/hazard/{lat}/{lon}            │ ← Flood Engine
+        │  GET /api/soil-erosion/hazard/{lat}/{lon}     │ ← Soil Erosion Engine
+        └───────────────────────────────────────────────┘
 ```
 
 ### Repository Structure
@@ -57,10 +59,13 @@ SIH26/
 │   ├── app/
 │   │   ├── main.py             ← FastAPI app entry point
 │   │   ├── api/routes/
-│   │   │   ├── hazard.py       ← Combined hazard score endpoint
-│   │   │   ├── susceptibility.py ← Terrain susceptibility model
-│   │   │   ├── trigger.py      ← Live rainfall + soil moisture (Open-Meteo)
-│   │   │   └── data_status.py  ← Data pipeline health check
+│   │   │   ├── hazard.py           ← Landslide combined hazard score
+│   │   │   ├── susceptibility.py   ← Terrain susceptibility model
+│   │   │   ├── trigger.py          ← Live rainfall + soil moisture (Open-Meteo)
+│   │   │   ├── cloudburst.py       ← Cloudburst intensity engine
+│   │   │   ├── flood.py            ← Flood inundation + river level engine
+│   │   │   ├── soil_erosion.py     ← Soil erosion (RUSLE) engine
+│   │   │   └── data_status.py      ← Data pipeline health check
 │   │   ├── models/             ← Data models (Pydantic schemas)
 │   │   ├── services/           ← Business logic layer
 │   │   └── ml/                 ← ML model placeholder
@@ -105,7 +110,7 @@ SIH26/
 |---|---|
 | **Command Center** | Overview Dashboard, Multi-Hazard Map, Risk Assessment |
 | **Relocation Planning** | Relocation Site Finder, Carrying Capacity Engine, Relocation Priority |
-| **Intelligence** | Landslide Model (live API), Analytics, Alert Center, Data Sources |
+| **Intelligence** | Landslide Engine (live API), Cloudburst Engine (live API), Flood Engine (live API), Soil Erosion Engine (live API), Analytics, Alert Center, Data Sources |
 | **System** | System Configuration |
 
 ---
@@ -238,7 +243,186 @@ Sites are sorted by weightedScore descending; safety filter is applied BEFORE ra
 - **Fallback Mode** — If backend is down, uses hardcoded demo data with a warning banner
 - **Simulating / Loading State** — Spinner while API call is in progress
 
-### 4.8 Analytics (`/analytics`)
+---
+
+### 4.8 Cloudburst Intelligence Engine (`/cloudburst`)
+**Purpose:** Real-time extreme rainfall / cloudburst hazard detection using live backend API.
+
+**What is a Cloudburst?**
+A cloudburst is defined as rainfall exceeding **100 mm/hour** in a localized area. It is a primary trigger for flash floods and slope failures in the Himalayan and sub-Himalayan region.
+
+**Key UI Elements:**
+- **Interactive GIS Map** — Click any location in India to query the cloudburst backend
+- **Live API Call Flow:**
+  ```
+  User clicks map
+      → Frontend: GET http://localhost:8000/api/cloudburst/hazard/{lat}/{lon}
+      → Backend computes: rainfall_intensity + convective_index + orographic_uplift + recurrence_probability
+      → Returns: hazard_score, level (LOW/MODERATE/ELEVATED/HIGH/CRITICAL), explanation[]
+  ```
+- **Hazard Score Display** — Big numeric score (0–100) with color-coded level badge
+- **Component Breakdown** — Individual sub-scores:
+  - *Rainfall Intensity Score* — Derived from Open-Meteo real-time precipitation data
+  - *Convective Index Score* — Atmospheric instability proxy (CAPE / lifted index)
+  - *Orographic Uplift Factor* — Elevation gradient driving forced ascent of moisture
+  - *Recurrence Probability Score* — Historical cloudburst frequency at this grid cell
+- **Explanation List** — Auto-generated human-readable explanations:
+  - e.g., "Extremely high rainfall intensity detected (>100 mm/hr threshold)."
+  - e.g., "High orographic uplift — terrain forces rapid moisture ascent."
+  - e.g., "Historically cloudburst-prone zone (≥3 events in 5 years)."
+- **IMD Rainfall Classification Panel** — Light / Moderate / Heavy / Very Heavy / Extremely Heavy / Cloudburst color scale
+- **Radar-Style Intensity Ring** — Visual ring showing intensity gradient from the click point
+- **Recommendation Banner** — "Activate flash flood warning" / "Pre-position emergency teams" / "Normal monitoring"
+- **Fallback Mode** — If backend is down, uses hardcoded demo data with a warning banner
+- **Simulating / Loading State** — Spinner while API call is in progress
+
+**Cloudburst Hazard Score Formula:**
+```python
+cloudburst_score = (rainfall_intensity × 0.40) + (convective_index × 0.25)
+                 + (orographic_uplift × 0.20) + (recurrence_probability × 0.15)
+```
+
+**Risk Level Classification:**
+| Score | Level | IMD Rainfall Class |
+|---|---|---|
+| 0–19 | LOW | Light (< 15 mm/hr) |
+| 20–39 | MODERATE | Heavy (15–64.4 mm/hr) |
+| 40–59 | ELEVATED | Very Heavy (64.5–115.5 mm/hr) |
+| 60–79 | HIGH | Extremely Heavy (> 115.6 mm/hr) |
+| 80–100 | CRITICAL | Cloudburst (> 100 mm in 1 hour) |
+
+**Affected Regions (Demo GeoJSON overlays):**
+| Region | Risk Level | Reason |
+|---|---|---|
+| Uttarakhand Himalayas | HIGH–CRITICAL | Steep terrain + Bay of Bengal moisture incursion |
+| Himachal Pradesh | HIGH | Orographic amplification of monsoon rainfall |
+| Northeast (Cherrapunji belt) | CRITICAL | World's highest rainfall zone |
+| Western Ghats (windward) | HIGH | Arabian Sea + topographic uplift |
+| Delhi NCR | MODERATE | Convective instability in July–August |
+
+---
+
+### 4.9 Flood Intelligence Engine (`/flood`)
+**Purpose:** Real-time riverine and flash flood inundation risk assessment using live river data and terrain models.
+
+**Key UI Elements:**
+- **Interactive GIS Map** — Click any river basin or habitation to query the flood backend
+- **Live API Call Flow:**
+  ```
+  User clicks map
+      → Frontend: GET http://localhost:8000/api/flood/hazard/{lat}/{lon}
+      → Backend computes: river_level + inundation_depth + drainage_capacity + historical_return_period
+      → Returns: hazard_score, level (LOW/MODERATE/ELEVATED/HIGH/CRITICAL), flood_type, explanation[]
+  ```
+- **Hazard Score Display** — Big numeric score (0–100) with flood-type tag (Riverine / Flash / Coastal / Urban)
+- **Component Breakdown** — Individual sub-scores:
+  - *River Level Score* — Current river level vs danger level (CWC data proxy)
+  - *Inundation Depth Score* — Modeled water depth using DEM + upstream runoff
+  - *Drainage Capacity Score* — Soil drainage rate + urban impervious cover
+  - *Return Period Score* — 1-in-N year flood event probability at this location
+- **Flood Type Classifier Panel** — Tags each location as:
+  - 🌊 *Riverine Flood* — River overflow due to prolonged heavy rain
+  - ⚡ *Flash Flood* — Rapid inundation (< 6 hours) usually triggered by cloudburst
+  - 🌀 *Coastal Flood* — Storm surge + cyclone combination
+  - 🏙️ *Urban Flood* — Poor drainage + impervious surfaces in cities
+- **River Basin Selector** — Dropdown to switch focus to Ganga / Brahmaputra / Krishna / Godavari / Mahanadi basins
+- **Danger Level Indicator** — Traffic-light gauge: Normal → Alert → Warning → Danger → Extreme Danger
+- **Population in Flood Zone** — Estimated number of people within the modeled inundation extent
+- **Explanation List** — e.g., "River level at 94% of danger mark.", "Low soil drainage — saturated catchment."
+- **Recommendation Banner** — "Evacuate low-lying areas" / "Issue flood warning" / "Monitor river levels"
+- **Fallback Mode** — If backend is down, uses hardcoded demo data with a warning banner
+- **Simulating / Loading State** — Spinner while API call is in progress
+
+**Flood Hazard Score Formula:**
+```python
+flood_score = (river_level × 0.35) + (inundation_depth × 0.30)
+            + (drainage_capacity × 0.20) + (return_period × 0.15)
+```
+
+**Risk Level Classification:**
+| Score | Level | CWC River Status |
+|---|---|---|
+| 0–19 | LOW | Normal flow |
+| 20–39 | MODERATE | Alert level reached |
+| 40–59 | ELEVATED | Warning level reached |
+| 60–79 | HIGH | Danger level reached |
+| 80–100 | CRITICAL | Extreme danger / breach risk |
+
+**Affected River Basins (Demo GeoJSON overlays):**
+| Basin | Risk Level | States Covered |
+|---|---|---|
+| Brahmaputra (Assam plains) | CRITICAL | Assam, Arunachal Pradesh |
+| Ganga (Bihar–UP plains) | HIGH | Bihar, UP, West Bengal |
+| Mahanadi (Odisha delta) | HIGH | Odisha, Chhattisgarh |
+| Godavari (upper catchment) | MODERATE | Telangana, AP |
+| Urban drainage (Mumbai) | HIGH | Maharashtra |
+
+---
+
+### 4.10 Soil Erosion Intelligence Engine (`/soil-erosion`)
+**Purpose:** Real-time soil loss and erosion hazard quantification using the RUSLE model and live rainfall data.
+
+**What is RUSLE?**
+The **Revised Universal Soil Loss Equation (RUSLE)** is the global standard for estimating annual soil erosion:
+```
+A = R × K × LS × C × P
+```
+Where: R=Rainfall erosivity, K=Soil erodibility, LS=Slope length-steepness, C=Cover management, P=Support practice
+
+**Key UI Elements:**
+- **Interactive GIS Map** — Click any location to query soil erosion risk
+- **Live API Call Flow:**
+  ```
+  User clicks map
+      → Frontend: GET http://localhost:8000/api/soil-erosion/hazard/{lat}/{lon}
+      → Backend computes: rainfall_erosivity + soil_erodibility + slope_factor + vegetation_cover + land_use
+      → Returns: hazard_score, erosion_rate_t_ha_yr, level (LOW/MODERATE/HIGH/SEVERE/VERY_SEVERE), explanation[]
+  ```
+- **Hazard Score Display** — Big numeric score (0–100) + annual soil loss estimate in **tonnes/hectare/year (t/ha/yr)**
+- **RUSLE Factor Panel** — Individual scores for each RUSLE factor:
+  - *R — Rainfall Erosivity* — Live from Open-Meteo (precipitation kinetic energy)
+  - *K — Soil Erodibility* — Based on soil texture and organic matter (NBSS data proxy)
+  - *LS — Slope Factor* — Computed from SRTM DEM data
+  - *C — Vegetation Cover* — NDVI-derived land cover classification
+  - *P — Conservation Practice* — Terracing, bunding, contour farming status
+- **Erosion Class Display** — Color-coded severity band:
+  - 🟢 Slight (< 5 t/ha/yr) → 🟡 Moderate (5–10) → 🟠 High (10–20) → 🔴 Severe (20–40) → ⚫ Very Severe (> 40)
+- **Land Use Sensitivity Panel** — Shows how current land use (agriculture, forest, barren) affects erosion
+- **Sediment Delivery Ratio** — Estimated fraction of eroded soil reaching the nearest river
+- **Downstream Impact Indicator** — Risk to reservoir siltation and river channel capacity
+- **Explanation List** — e.g., "High slope steepness amplifies erosion potential.", "Low vegetation cover — bare soil exposed during monsoon.", "High rainfall erosivity in current monsoon season."
+- **Recommendation Banner** — "Immediate afforestation needed" / "Implement contour bunding" / "Acceptable erosion levels"
+- **Fallback Mode** — If backend is down, uses hardcoded demo data with a warning banner
+- **Simulating / Loading State** — Spinner while API call is in progress
+
+**Soil Erosion Hazard Score Formula:**
+```python
+erosion_score = (rainfall_erosivity × 0.25) + (slope_factor × 0.30)
+              + (soil_erodibility × 0.20) + (vegetation_loss × 0.15)
+              + (land_use_intensity × 0.10)
+```
+
+**Risk Level Classification:**
+| Score | Level | Soil Loss (t/ha/yr) | Action |
+|---|---|---|---|
+| 0–19 | LOW | < 5 | Normal monitoring |
+| 20–39 | MODERATE | 5–10 | Preventive conservation |
+| 40–59 | HIGH | 10–20 | Watershed treatment needed |
+| 60–79 | SEVERE | 20–40 | Emergency afforestation |
+| 80–100 | VERY SEVERE | > 40 | Critical — immediate intervention |
+
+**Affected Zones (Demo GeoJSON overlays):**
+| Region | Risk Level | Primary Driver |
+|---|---|---|
+| Himalayan foothills (Shivaliks) | SEVERE | Deforestation + high rainfall + steep slopes |
+| Deccan Plateau (degraded lands) | HIGH | Sparse vegetation + black cotton soil |
+| Coastal areas (AP, Odisha) | MODERATE–HIGH | Wave action + seasonal rainfall |
+| North-East hill states | SEVERE | Jhum cultivation + intense monsoon |
+| Aravalli degraded zone (Rajasthan) | MODERATE | Wind erosion + low vegetation |
+
+---
+
+### 4.11 Analytics (`/analytics`)
 **Purpose:** Planning-grade charts with clear data labeling.
 
 **Key UI Elements:**
@@ -248,7 +432,7 @@ Sites are sorted by weightedScore descending; safety filter is applied BEFORE ra
 - **Exposure by Hazard Type** — Horizontal bars for Flood (72%), Landslide (58%), Cloudburst (44%), Coastal (29%)
 - **Readiness & Capacity Bars** — Relocation capacity available / Water pass rate / Infrastructure readiness
 
-### 4.9 Alert Center (`/alerts`)
+### 4.12 Alert Center (`/alerts`)
 **Purpose:** Monitor incoming risk signals and link them to actionable assessments.
 
 **Key UI Elements:**
@@ -257,7 +441,7 @@ Sites are sorted by weightedScore descending; safety filter is applied BEFORE ra
 - **Actionable Links** — Each alert has a "View assessment →" or "Check capacity →" button
 - **Advisory Disclaimer** — "No automatic public warning is issued by this prototype"
 
-### 4.10 Data Sources (`/sources`)
+### 4.13 Data Sources (`/sources`)
 **Purpose:** Full transparency on what data the platform uses.
 
 **Key UI Elements:**
@@ -265,7 +449,7 @@ Sites are sorted by weightedScore descending; safety filter is applied BEFORE ra
 - **Data Pipeline Flowchart** — 8-step pipeline from raw data to dashboard
 - **Domain Guardrail Panel** — Checklist of what the system is/isn't authorized to do
 
-### 4.11 Settings (`/settings`)
+### 4.14 Settings (`/settings`)
 **Purpose:** Configure planning extent and prototype controls.
 
 **Key UI Elements:**
@@ -368,6 +552,218 @@ hazard_score = (susceptibility × 0.30) + (trigger × 0.25) + (soil_moisture × 
 
 #### `GET /api/landslide/data-status`
 Returns pipeline health (data freshness, API connectivity status).
+
+---
+
+### Cloudburst Engine API Endpoints
+
+#### `GET /api/cloudburst/susceptibility/{lat}/{lon}`
+Returns terrain and climate susceptibility to cloudburst events.
+```json
+{
+  "location": { "lat": 30.5, "lon": 78.2 },
+  "susceptibility_score": 82,
+  "class": "Very High",
+  "features": {
+    "orographic_uplift": { "value": 91, "contribution": "Very High" },
+    "elevation_gradient": { "value": 1450.0, "contribution": "High" },
+    "proximity_to_moisture_belt": { "value": "< 80 km", "contribution": "High" }
+  },
+  "mode": "DEMO"
+}
+```
+
+#### `GET /api/cloudburst/trigger/{lat}/{lon}`
+Fetches **LIVE** convective and rainfall trigger data from Open-Meteo API.
+```json
+{
+  "location": { "lat": 30.5, "lon": 78.2 },
+  "trigger_score": 76,
+  "rainfall_intensity_score": 88,
+  "rainfall_data": {
+    "1h": 87.4,
+    "3h": 142.6,
+    "24h": 198.2
+  },
+  "convective_index": 72,
+  "mode": "LIVE"
+}
+```
+- **Open-Meteo fields used:** `current.precipitation`, `hourly.precipitation`, `daily.precipitation_sum`
+- **Cloudburst threshold:** 1-hour rainfall > 100 mm triggers CRITICAL level automatically
+- **Fallback:** Graceful fallback to demo data (mode: `FALLBACK-DEMO`)
+
+#### `GET /api/cloudburst/hazard/{lat}/{lon}`
+Combines all signals into a unified cloudburst hazard score.
+```json
+{
+  "location": { "lat": 30.5, "lon": 78.2 },
+  "hazard_score": 81,
+  "level": "CRITICAL",
+  "components": {
+    "rainfall_intensity": 88,
+    "convective_index": 72,
+    "orographic_uplift": 91,
+    "recurrence_probability": 65
+  },
+  "explanation": [
+    "Extremely high 1-hour rainfall (87.4 mm, near cloudburst threshold).",
+    "Very high orographic uplift — terrain forces rapid moisture ascent.",
+    "High convective instability detected in the atmosphere.",
+    "Historically cloudburst-prone zone (≥3 events in 5 years)."
+  ],
+  "recommendation": "Activate flash flood warning. Pre-position emergency teams."
+}
+```
+
+**Hazard Score Formula:**
+```python
+cloudburst_score = (rainfall_intensity × 0.40) + (convective_index × 0.25)
+                 + (orographic_uplift × 0.20) + (recurrence_probability × 0.15)
+```
+
+---
+
+### Flood Engine API Endpoints
+
+#### `GET /api/flood/susceptibility/{lat}/{lon}`
+Returns terrain and hydrological susceptibility to flooding.
+```json
+{
+  "location": { "lat": 26.2, "lon": 91.7 },
+  "susceptibility_score": 89,
+  "class": "Very High",
+  "features": {
+    "floodplain_proximity": { "value": "< 1 km from Brahmaputra", "contribution": "Very High" },
+    "elevation_above_river": { "value": 2.4, "contribution": "Very High" },
+    "soil_drainage_class": { "value": "Very Poorly Drained", "contribution": "High" }
+  },
+  "mode": "DEMO"
+}
+```
+
+#### `GET /api/flood/trigger/{lat}/{lon}`
+Fetches **LIVE** river level and rainfall accumulation data.
+```json
+{
+  "location": { "lat": 26.2, "lon": 91.7 },
+  "trigger_score": 83,
+  "river_level_score": 91,
+  "drainage_capacity_score": 22,
+  "rainfall_data": {
+    "24h": 145.3,
+    "7d": 623.8
+  },
+  "river_status": "DANGER",
+  "mode": "LIVE"
+}
+```
+- **Open-Meteo fields used:** `daily.precipitation_sum`, `current.soil_moisture_0_to_7cm`, `hourly.precipitation`
+- **CWC River Levels:** Proxied using 7-day cumulative rainfall vs basin capacity model
+- **Fallback:** Graceful fallback to demo data (mode: `FALLBACK-DEMO`)
+
+#### `GET /api/flood/hazard/{lat}/{lon}`
+Combines all signals into a unified flood hazard score.
+```json
+{
+  "location": { "lat": 26.2, "lon": 91.7 },
+  "hazard_score": 88,
+  "level": "CRITICAL",
+  "flood_type": "RIVERINE",
+  "components": {
+    "river_level": 91,
+    "inundation_depth": 84,
+    "drainage_capacity": 22,
+    "return_period": 76
+  },
+  "explanation": [
+    "River level at 94% of danger mark — overflow imminent.",
+    "7-day cumulative rainfall (623 mm) has saturated entire catchment.",
+    "Very poor soil drainage — surface runoff is maximized.",
+    "This is estimated to be a 1-in-25 year flood event."
+  ],
+  "recommendation": "Evacuate all low-lying areas immediately. Issue red flood alert."
+}
+```
+
+**Hazard Score Formula:**
+```python
+flood_score = (river_level × 0.35) + (inundation_depth × 0.30)
+            + (drainage_capacity × 0.20) + (return_period × 0.15)
+```
+
+---
+
+### Soil Erosion Engine API Endpoints
+
+#### `GET /api/soil-erosion/susceptibility/{lat}/{lon}`
+Returns long-term terrain susceptibility to soil erosion using RUSLE factors.
+```json
+{
+  "location": { "lat": 27.8, "lon": 77.5 },
+  "susceptibility_score": 71,
+  "class": "High",
+  "rusle_factors": {
+    "K_erodibility": { "value": 0.42, "contribution": "High" },
+    "LS_slope_factor": { "value": 3.8, "contribution": "Very High" },
+    "C_vegetation": { "value": 0.35, "contribution": "High" },
+    "P_conservation": { "value": 0.8, "contribution": "Moderate" }
+  },
+  "mode": "DEMO"
+}
+```
+
+#### `GET /api/soil-erosion/trigger/{lat}/{lon}`
+Fetches **LIVE** rainfall erosivity from Open-Meteo API.
+```json
+{
+  "location": { "lat": 27.8, "lon": 77.5 },
+  "trigger_score": 68,
+  "rainfall_erosivity_score": 74,
+  "rainfall_data": {
+    "24h": 62.4,
+    "7d": 287.1,
+    "monthly": 1124.3
+  },
+  "estimated_soil_loss_t_ha_yr": 18.6,
+  "mode": "LIVE"
+}
+```
+- **RUSLE R-factor:** Computed from cumulative kinetic energy of rainfall (Open-Meteo precipitation data)
+- **Soil loss estimate:** `A = R × K × LS × C × P` (simplified with proxy values)
+- **Fallback:** Graceful fallback to demo data (mode: `FALLBACK-DEMO`)
+
+#### `GET /api/soil-erosion/hazard/{lat}/{lon}`
+Combines all RUSLE signals into a unified soil erosion hazard score.
+```json
+{
+  "location": { "lat": 27.8, "lon": 77.5 },
+  "hazard_score": 69,
+  "level": "HIGH",
+  "estimated_soil_loss_t_ha_yr": 18.6,
+  "components": {
+    "rainfall_erosivity": 74,
+    "slope_factor": 85,
+    "soil_erodibility": 61,
+    "vegetation_loss": 58,
+    "land_use_intensity": 44
+  },
+  "explanation": [
+    "High slope steepness amplifies erosion potential significantly.",
+    "Elevated rainfall erosivity — monsoon energy exceeds threshold.",
+    "Moderate soil erodibility — silty loam texture prone to detachment.",
+    "Sparse vegetation cover leaves soil exposed during monsoon."
+  ],
+  "recommendation": "Implement contour bunding and check dams. Afforestation priority zone."
+}
+```
+
+**Hazard Score Formula:**
+```python
+erosion_score = (rainfall_erosivity × 0.25) + (slope_factor × 0.30)
+              + (soil_erodibility × 0.20) + (vegetation_loss × 0.15)
+              + (land_use_intensity × 0.10)
+```
 
 ### CORS Configuration
 ```python
@@ -573,8 +969,11 @@ GET  /api/data-sources                    → Dataset health and freshness
 5. **Click "Find relocation sites"** → Show 100 → 32 → ranked sites pipeline
 6. **Adjust weight sliders** → Watch ranking update in real-time
 7. **Click "Open detail" on Site A** → Show carrying capacity PASS result
-8. **Go to Landslide page** → Click on Uttarakhand → Show live API call → Show hazard score
-9. **Go to Analytics** → Show risk distribution + 2026→2050 trend projection
+8. **Go to Landslide page** → Click on Uttarakhand → Show live API call → Show hazard score with explanation
+9. **Go to Cloudburst page** → Click on Cherrapunji/Northeast India → Show CRITICAL level + IMD rainfall class
+10. **Go to Flood page** → Click on Assam (Brahmaputra delta) → Show DANGER river status + evacuation recommendation
+11. **Go to Soil Erosion page** → Click on Himachal foothills → Show RUSLE factors + soil loss in t/ha/yr
+12. **Go to Analytics** → Show risk distribution + 2026→2050 trend projection
 
 ---
 
